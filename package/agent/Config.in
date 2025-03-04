@@ -1,0 +1,5 @@
+config BR2_PACKAGE_AGENT
+	bool "agent"
+	default n
+	help
+	  Confidential Distributed Computing Agent

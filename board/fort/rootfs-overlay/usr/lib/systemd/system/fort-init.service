@@ -1,0 +1,12 @@
+[Unit]
+Description=Fort init
+After=network.target
+
+[Service]
+WorkingDirectory=/root
+
+ExecStartPre=/root/network_up.sh
+ExecStart=/root/ray_init.sh
+
+[Install]
+WantedBy=default.target
