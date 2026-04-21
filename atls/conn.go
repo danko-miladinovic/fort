@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/tls-attestation/attestation-exported-authenticators-go/attestation"
-	"github.com/tls-attestation/attestation-exported-authenticators-go/ea"
+	"github.com/danko-miladinovic/fort/atls/attestation"
+	"github.com/danko-miladinovic/fort/atls/ea"
 )
 
 type Conn struct {

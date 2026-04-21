@@ -1,0 +1,1 @@
+source "$BR2_EXTERNAL_FORT_PATH/package/fort-client/Config.in"

@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/tls-attestation/attestation-exported-authenticators-go/atls"
+	"github.com/danko-miladinovic/fort/atls"
 )
 
 func main() {

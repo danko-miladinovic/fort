@@ -6,7 +6,7 @@ import (
 	"crypto/x509"
 	"fmt"
 
-	"github.com/tls-attestation/attestation-exported-authenticators-go/attestation"
+	"github.com/danko-miladinovic/fort/atls/attestation"
 )
 
 type ValidationResult struct {

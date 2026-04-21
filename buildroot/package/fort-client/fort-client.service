@@ -1,0 +1,13 @@
+[Unit]
+Description=Fort ATLS client
+After=network.target
+
+[Service]
+Type=simple
+ExecStartPre=/root/network_up.sh
+ExecStart=/usr/bin/client
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

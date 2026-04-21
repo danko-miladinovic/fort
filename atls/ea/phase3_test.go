@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tls-attestation/attestation-exported-authenticators-go/attestation"
+	"github.com/danko-miladinovic/fort/atls/attestation"
 )
 
 func selfSignedCert(t *testing.T) tls.Certificate {
