@@ -5,6 +5,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStartPre=/root/network_up.sh
+Environment=ATLS_USE_SEV_SNP_ATTESTATION=false
 ExecStart=/usr/bin/client
 Restart=on-failure
 RestartSec=5

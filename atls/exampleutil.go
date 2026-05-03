@@ -3,9 +3,11 @@ package atls
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"fmt"
 	"io"
 	"math/big"
 	mathrand "math/rand"
@@ -13,11 +15,26 @@ import (
 
 	"github.com/danko-miladinovic/fort/atls/attestation"
 	"github.com/danko-miladinovic/fort/atls/ea"
+	sevguestclient "github.com/google/go-sev-guest/client"
+	"google.golang.org/protobuf/proto"
 )
 
 type AcceptEvidenceVerifier struct{}
 
 func (AcceptEvidenceVerifier) VerifyEvidence(evidence []byte) error { return nil }
+
+const (
+	dummyAttestationEvidence           = "dummy-attestation-report"
+	dummyAttestationEvidenceMediaType  = "application/octet-stream"
+	sevSNPAttestationEvidenceMediaType = "application/vnd.google.go-sev-guest.attestation+protobuf"
+)
+
+type AttestationEvidence struct {
+	MediaType string
+	Bytes     []byte
+}
+
+type AttestationEvidenceFetcher func(reportData [64]byte) (AttestationEvidence, error)
 
 func GenerateExampleCertificate() (tls.Certificate, error) {
 	entropy := newDeterministicReader(1)
@@ -32,8 +49,11 @@ func GenerateExampleCertificate() (tls.Certificate, error) {
 		NotBefore:    notBefore,
 		NotAfter:     time.Date(2040, time.January, 1, 0, 0, 0, 0, time.UTC),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     []string{"localhost"},
+		ExtKeyUsage: []x509.ExtKeyUsage{
+			x509.ExtKeyUsageServerAuth,
+			x509.ExtKeyUsageClientAuth,
+		},
+		DNSNames: []string{"localhost"},
 	}
 	der, err := x509.CreateCertificate(entropy, template, template, &priv.PublicKey, priv)
 	if err != nil {
@@ -43,18 +63,59 @@ func GenerateExampleCertificate() (tls.Certificate, error) {
 }
 
 func ExampleServerLeafExtensions(st *tls.ConnectionState, req *ea.AuthenticatorRequest, leaf *x509.Certificate) ([]ea.Extension, error) {
+	return ExampleAttesterLeafExtensions(st, req, leaf)
+}
+
+func SEVSNPServerLeafExtensions(st *tls.ConnectionState, req *ea.AuthenticatorRequest, leaf *x509.Certificate) ([]ea.Extension, error) {
+	return SEVSNPAttesterLeafExtensions(st, req, leaf)
+}
+
+func ExampleAttesterLeafExtensions(st *tls.ConnectionState, req *ea.AuthenticatorRequest, leaf *x509.Certificate) ([]ea.Extension, error) {
+	return buildAttesterLeafExtensions(st, req, leaf, fetchDummyAttestationEvidence)
+}
+
+func SEVSNPAttesterLeafExtensions(st *tls.ConnectionState, req *ea.AuthenticatorRequest, leaf *x509.Certificate) ([]ea.Extension, error) {
+	return buildAttesterLeafExtensions(st, req, leaf, fetchSEVSNPAttestationEvidence)
+}
+
+func AttesterLeafExtensions(useSEVSNP bool) func(*tls.ConnectionState, *ea.AuthenticatorRequest, *x509.Certificate) ([]ea.Extension, error) {
+	if useSEVSNP {
+		return SEVSNPAttesterLeafExtensions
+	}
+	return ExampleAttesterLeafExtensions
+}
+
+func ServerLeafExtensions(useSEVSNP bool) func(*tls.ConnectionState, *ea.AuthenticatorRequest, *x509.Certificate) ([]ea.Extension, error) {
+	return AttesterLeafExtensions(useSEVSNP)
+}
+
+func buildAttesterLeafExtensions(st *tls.ConnectionState, req *ea.AuthenticatorRequest, leaf *x509.Certificate, fetcher AttestationEvidenceFetcher) ([]ea.Extension, error) {
+	if req == nil {
+		return nil, fmt.Errorf("atls: missing authenticator request")
+	}
+	if fetcher == nil {
+		fetcher = fetchDummyAttestationEvidence
+	}
+
 	_, aikPubHash, binding, err := attestation.ComputeBinding(st, attestation.ExporterLabelAttestation, req.Context, leaf)
+	if err != nil {
+		return nil, err
+	}
+	reportData, err := buildSEVSNPReportData(req.Context, leaf)
+	if err != nil {
+		return nil, err
+	}
+	evidence, err := fetcher(reportData)
 	if err != nil {
 		return nil, err
 	}
 	payloadBytes, err := attestation.MarshalPayload(attestation.Payload{
 		Version:   1,
-		MediaType: "application/eat+cwt",
-		Evidence:  []byte("dummy-attestation-report"),
+		MediaType: evidence.MediaType,
+		Evidence:  evidence.Bytes,
 		Binder: attestation.AttestationBinder{
-			ExporterLabel: attestation.ExporterLabelAttestation,
-			AIKPubHash:    aikPubHash,
-			Binding:       binding,
+			AIKPubHash: aikPubHash,
+			Binding:    binding,
 		},
 	})
 	if err != nil {
@@ -67,13 +128,59 @@ func ExampleServerLeafExtensions(st *tls.ConnectionState, req *ea.AuthenticatorR
 	return []ea.Extension{ext}, nil
 }
 
+func buildSEVSNPReportData(context []byte, leaf *x509.Certificate) ([64]byte, error) {
+	var reportData [64]byte
+
+	pubKey, err := attestation.PublicKeyBytes(leaf)
+	if err != nil {
+		return reportData, err
+	}
+	digest := sha512.New()
+	if _, err := digest.Write(pubKey); err != nil {
+		return reportData, err
+	}
+	if _, err := digest.Write(context); err != nil {
+		return reportData, err
+	}
+	copy(reportData[:], digest.Sum(nil))
+	return reportData, nil
+}
+
+func fetchDummyAttestationEvidence(_ [64]byte) (AttestationEvidence, error) {
+	return AttestationEvidence{
+		MediaType: dummyAttestationEvidenceMediaType,
+		Bytes:     []byte(dummyAttestationEvidence),
+	}, nil
+}
+
+func fetchSEVSNPAttestationEvidence(reportData [64]byte) (AttestationEvidence, error) {
+	device, err := sevguestclient.OpenDevice()
+	if err != nil {
+		return AttestationEvidence{}, fmt.Errorf("open SEV guest device: %w", err)
+	}
+	defer device.Close()
+
+	report, err := sevguestclient.GetExtendedReport(device, reportData)
+	if err != nil {
+		return AttestationEvidence{}, fmt.Errorf("get SEV-SNP extended report: %w", err)
+	}
+	evidence, err := proto.Marshal(report)
+	if err != nil {
+		return AttestationEvidence{}, fmt.Errorf("marshal SEV-SNP attestation: %w", err)
+	}
+	return AttestationEvidence{
+		MediaType: sevSNPAttestationEvidenceMediaType,
+		Bytes:     evidence,
+	}, nil
+}
+
 func ExampleRequest(context []byte) (*ea.AuthenticatorRequest, error) {
 	sigExt, err := ea.SignatureAlgorithmsExtension([]uint16{uint16(tls.ECDSAWithP256AndSHA256)})
 	if err != nil {
 		return nil, err
 	}
 	return &ea.AuthenticatorRequest{
-		Type:    ea.HandshakeTypeClientCertificateRequest,
+		Type:    ea.HandshakeTypeCertificateRequest,
 		Context: context,
 		Extensions: []ea.Extension{
 			sigExt,
@@ -89,7 +196,10 @@ func ExampleVerifyOptions(cert tls.Certificate) (*x509.VerifyOptions, error) {
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(leaf)
-	return &x509.VerifyOptions{Roots: roots}, nil
+	return &x509.VerifyOptions{
+		Roots:     roots,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}, nil
 }
 
 type deterministicReader struct {

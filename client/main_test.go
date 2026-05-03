@@ -42,3 +42,35 @@ func TestResolveDialAddressFallsBackToKernelCmdline(t *testing.T) {
 		t.Fatalf("expected kernel cmdline verifier address, got %q", addr)
 	}
 }
+
+func TestBoolEnvDefaultsFalse(t *testing.T) {
+	t.Setenv(useSEVSNPAttestationEnv, "")
+
+	enabled, err := boolEnv(useSEVSNPAttestationEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabled {
+		t.Fatal("expected env to default to false")
+	}
+}
+
+func TestBoolEnvParsesTrue(t *testing.T) {
+	t.Setenv(useSEVSNPAttestationEnv, "true")
+
+	enabled, err := boolEnv(useSEVSNPAttestationEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !enabled {
+		t.Fatal("expected env to parse as true")
+	}
+}
+
+func TestBoolEnvRejectsInvalidValue(t *testing.T) {
+	t.Setenv(useSEVSNPAttestationEnv, "not-a-bool")
+
+	if _, err := boolEnv(useSEVSNPAttestationEnv); err == nil {
+		t.Fatal("expected invalid env value to fail")
+	}
+}

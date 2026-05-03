@@ -10,11 +10,16 @@ import (
 	"strings"
 
 	"github.com/danko-miladinovic/fort/atls"
+	"github.com/danko-miladinovic/fort/atls/attestation"
 )
 
 func main() {
 	addr := envOrDefault("ATLS_ADDR", "127.0.0.1:9443")
 	cert, err := atls.GenerateExampleCertificate()
+	if err != nil {
+		log.Fatal(err)
+	}
+	verifyOpts, err := atls.ExampleVerifyOptions(cert)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -25,8 +30,10 @@ func main() {
 			MinVersion:   tls.VersionTLS13,
 			MaxVersion:   tls.VersionTLS13,
 		},
-		Identity:            cert,
-		BuildLeafExtensions: atls.ExampleServerLeafExtensions,
+		VerifyOptions: verifyOpts,
+		AttestationPolicy: attestation.VerificationPolicy{
+			EvidenceVerifier: atls.AcceptEvidenceVerifier{},
+		},
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -39,6 +46,9 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		if atlsConn, ok := conn.(*atls.Conn); ok {
+			log.Printf("client attestation verified=%v", atlsConn.ValidationResult != nil && atlsConn.ValidationResult.Attestation != nil)
+		}
 		go handleConn(conn)
 	}
 }
@@ -49,7 +59,7 @@ func handleConn(conn net.Conn) {
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
 		line := scanner.Text()
-		log.Printf("client says: %s", line)
+		fmt.Println(line)
 		if _, err := fmt.Fprintf(conn, "echo:%s\n", line); err != nil {
 			log.Printf("write failed: %v", err)
 			return
@@ -64,8 +74,8 @@ func handleConn(conn net.Conn) {
 }
 
 func envOrDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
 	}
 	return fallback
 }

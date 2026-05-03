@@ -17,19 +17,19 @@ type Conn struct {
 }
 
 type ClientConfig struct {
+	TLSConfig           *tls.Config
+	Session             *ea.Session
+	Identity            tls.Certificate
+	BuildLeafExtensions func(*tls.ConnectionState, *ea.AuthenticatorRequest, *x509.Certificate) ([]ea.Extension, error)
+}
+
+type ServerConfig struct {
 	TLSConfig         *tls.Config
 	Session           *ea.Session
 	VerifyOptions     *x509.VerifyOptions
 	AttestationPolicy attestation.VerificationPolicy
 	Request           *ea.AuthenticatorRequest
 	RequestBuilder    func() (*ea.AuthenticatorRequest, error)
-}
-
-type ServerConfig struct {
-	TLSConfig           *tls.Config
-	Session             *ea.Session
-	Identity            tls.Certificate
-	BuildLeafExtensions func(*tls.ConnectionState, *ea.AuthenticatorRequest, *x509.Certificate) ([]ea.Extension, error)
 }
 
 func Dial(network, address string, cfg *ClientConfig) (*Conn, error) {
@@ -54,51 +54,13 @@ func DialWithDialer(d *net.Dialer, network, address string, cfg *ClientConfig) (
 }
 
 func Client(tlsConn *tls.Conn, cfg *ClientConfig) (*Conn, error) {
-	if cfg == nil {
+	if cfg == nil || cfg.TLSConfig == nil {
 		return nil, fmt.Errorf("atls: missing client config")
 	}
 	if err := tlsConn.Handshake(); err != nil {
 		return nil, err
 	}
-	req, err := buildRequest(cfg)
-	if err != nil {
-		return nil, err
-	}
-	reqBytes, err := req.Marshal()
-	if err != nil {
-		return nil, err
-	}
-	if err := writeFrame(tlsConn, frameTypeRequest, reqBytes); err != nil {
-		return nil, err
-	}
-	frameType, authBytes, err := readFrame(tlsConn)
-	if err != nil {
-		return nil, err
-	}
-	if frameType != frameTypeAuthenticator {
-		return nil, fmt.Errorf("atls: unexpected frame type %d", frameType)
-	}
 
-	st := tlsConn.ConnectionState()
-	var res *ea.ValidationResult
-	if cfg.Session != nil {
-		res, err = cfg.Session.ValidateAuthenticatorWithAttestation(&st, ea.RoleServer, req, authBytes, cfg.VerifyOptions, cfg.AttestationPolicy)
-	} else {
-		res, err = ea.ValidateAuthenticatorWithAttestation(&st, ea.RoleServer, req, authBytes, cfg.VerifyOptions, cfg.AttestationPolicy)
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &Conn{Conn: tlsConn, Request: req, ValidationResult: res}, nil
-}
-
-func Server(tlsConn *tls.Conn, cfg *ServerConfig) (*Conn, error) {
-	if cfg == nil || cfg.TLSConfig == nil {
-		return nil, fmt.Errorf("atls: missing server config")
-	}
-	if err := tlsConn.Handshake(); err != nil {
-		return nil, err
-	}
 	frameType, reqBytes, err := readFrame(tlsConn)
 	if err != nil {
 		return nil, err
@@ -115,20 +77,20 @@ func Server(tlsConn *tls.Conn, cfg *ServerConfig) (*Conn, error) {
 	}
 
 	st := tlsConn.ConnectionState()
-	identity, err := resolveIdentity(cfg)
+	identity, err := resolveClientIdentity(cfg)
 	if err != nil {
 		return nil, err
 	}
-	exts, err := buildServerExtensions(cfg, &st, &req, identity)
+	exts, err := buildClientExtensions(cfg, &st, &req, identity)
 	if err != nil {
 		return nil, err
 	}
 
 	var authBytes []byte
 	if cfg.Session != nil {
-		authBytes, err = cfg.Session.CreateAuthenticator(&st, ea.RoleServer, &req, identity, exts)
+		authBytes, err = cfg.Session.CreateAuthenticator(&st, ea.RoleClient, &req, identity, exts)
 	} else {
-		authBytes, err = ea.CreateAuthenticator(&st, ea.RoleServer, &req, identity, exts)
+		authBytes, err = ea.CreateAuthenticator(&st, ea.RoleClient, &req, identity, exts)
 	}
 	if err != nil {
 		return nil, err
@@ -139,7 +101,47 @@ func Server(tlsConn *tls.Conn, cfg *ServerConfig) (*Conn, error) {
 	return &Conn{Conn: tlsConn, Request: &req}, nil
 }
 
-func buildRequest(cfg *ClientConfig) (*ea.AuthenticatorRequest, error) {
+func Server(tlsConn *tls.Conn, cfg *ServerConfig) (*Conn, error) {
+	if cfg == nil || cfg.TLSConfig == nil {
+		return nil, fmt.Errorf("atls: missing server config")
+	}
+	if err := tlsConn.Handshake(); err != nil {
+		return nil, err
+	}
+	req, err := buildRequest(cfg)
+	if err != nil {
+		return nil, err
+	}
+	reqBytes, err := req.Marshal()
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFrame(tlsConn, frameTypeRequest, reqBytes); err != nil {
+		return nil, err
+	}
+
+	frameType, authBytes, err := readFrame(tlsConn)
+	if err != nil {
+		return nil, err
+	}
+	if frameType != frameTypeAuthenticator {
+		return nil, fmt.Errorf("atls: unexpected frame type %d", frameType)
+	}
+
+	st := tlsConn.ConnectionState()
+	var res *ea.ValidationResult
+	if cfg.Session != nil {
+		res, err = cfg.Session.ValidateAuthenticatorWithAttestation(&st, ea.RoleClient, req, authBytes, cfg.VerifyOptions, cfg.AttestationPolicy)
+	} else {
+		res, err = ea.ValidateAuthenticatorWithAttestation(&st, ea.RoleClient, req, authBytes, cfg.VerifyOptions, cfg.AttestationPolicy)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &Conn{Conn: tlsConn, Request: req, ValidationResult: res}, nil
+}
+
+func buildRequest(cfg *ServerConfig) (*ea.AuthenticatorRequest, error) {
 	if cfg.RequestBuilder != nil {
 		return cfg.RequestBuilder()
 	}
@@ -155,7 +157,7 @@ func buildRequest(cfg *ClientConfig) (*ea.AuthenticatorRequest, error) {
 		return nil, err
 	}
 	return &ea.AuthenticatorRequest{
-		Type:    ea.HandshakeTypeClientCertificateRequest,
+		Type:    ea.HandshakeTypeCertificateRequest,
 		Context: ctx,
 		Extensions: []ea.Extension{
 			sigExt,
@@ -164,22 +166,22 @@ func buildRequest(cfg *ClientConfig) (*ea.AuthenticatorRequest, error) {
 	}, nil
 }
 
-func resolveIdentity(cfg *ServerConfig) (tls.Certificate, error) {
+func resolveClientIdentity(cfg *ClientConfig) (tls.Certificate, error) {
 	if len(cfg.Identity.Certificate) > 0 && cfg.Identity.PrivateKey != nil {
 		return cfg.Identity, nil
 	}
 	if cfg.TLSConfig != nil && len(cfg.TLSConfig.Certificates) > 0 {
 		return cfg.TLSConfig.Certificates[0], nil
 	}
-	return tls.Certificate{}, fmt.Errorf("atls: missing server identity")
+	return tls.Certificate{}, fmt.Errorf("atls: missing client identity")
 }
 
-func buildServerExtensions(cfg *ServerConfig, st *tls.ConnectionState, req *ea.AuthenticatorRequest, identity tls.Certificate) ([]ea.Extension, error) {
+func buildClientExtensions(cfg *ClientConfig, st *tls.ConnectionState, req *ea.AuthenticatorRequest, identity tls.Certificate) ([]ea.Extension, error) {
 	if cfg.BuildLeafExtensions == nil {
 		return nil, nil
 	}
 	if len(identity.Certificate) == 0 {
-		return nil, fmt.Errorf("atls: missing server leaf certificate")
+		return nil, fmt.Errorf("atls: missing client leaf certificate")
 	}
 	leaf, err := x509.ParseCertificate(identity.Certificate[0])
 	if err != nil {

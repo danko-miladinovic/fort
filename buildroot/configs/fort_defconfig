@@ -23,6 +23,7 @@ BR2_TOOLCHAIN_HEADERS_AT_LEAST="6.12"
 
 # Rootfs overlay
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_FORT_PATH)/board/fort/rootfs-overlay"
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_FORT_PATH)/board/fort/post-image.sh"
 
 # Kernel
 BR2_LINUX_KERNEL=y

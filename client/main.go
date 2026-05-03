@@ -7,12 +7,11 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/danko-miladinovic/fort/atls"
-	"github.com/danko-miladinovic/fort/atls/attestation"
-	"github.com/danko-miladinovic/fort/atls/ea"
 )
 
 const (
@@ -21,6 +20,7 @@ const (
 	verifierIPKernelParam   = "verifier_ip"
 	verifierPortKernelParam = "verifier_port"
 	connectRetryInterval    = 5 * time.Second
+	useSEVSNPAttestationEnv = "ATLS_USE_SEV_SNP_ATTESTATION"
 )
 
 func main() {
@@ -36,19 +36,11 @@ func main() {
 }
 
 func run(addr string) error {
+	useSEVSNPAttestation, err := boolEnv(useSEVSNPAttestationEnv)
+	if err != nil {
+		return err
+	}
 	cert, err := atls.GenerateExampleCertificate()
-	if err != nil {
-		return err
-	}
-	ctx, err := ea.NewRandomContext(16)
-	if err != nil {
-		return err
-	}
-	req, err := atls.ExampleRequest(ctx)
-	if err != nil {
-		return err
-	}
-	verifyOpts, err := atls.ExampleVerifyOptions(cert)
 	if err != nil {
 		return err
 	}
@@ -60,19 +52,16 @@ func run(addr string) error {
 			MinVersion:         tls.VersionTLS13,
 			MaxVersion:         tls.VersionTLS13,
 		},
-		VerifyOptions: verifyOpts,
-		Request:       req,
-		AttestationPolicy: attestation.VerificationPolicy{
-			EvidenceVerifier: atls.AcceptEvidenceVerifier{},
-		},
+		Identity:            cert,
+		BuildLeafExtensions: atls.AttesterLeafExtensions(useSEVSNPAttestation),
 	})
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	log.Printf("EA bootstrap complete; attestation verified=%v", conn.ValidationResult != nil && conn.ValidationResult.Attestation != nil)
-	if _, err := fmt.Fprintln(conn, "hello-from-client"); err != nil {
+	log.Printf("EA bootstrap complete; client attestation sent")
+	if _, err := fmt.Fprintln(conn, "Hello World!"); err != nil {
 		return err
 	}
 	reply, err := bufio.NewReader(conn).ReadString('\n')
@@ -127,4 +116,16 @@ func parseKernelCmdline(cmdline string) map[string]string {
 		params[key] = value
 	}
 	return params
+}
+
+func boolEnv(key string) (bool, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return false, nil
+	}
+	enabled, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("invalid %s value %q", key, value)
+	}
+	return enabled, nil
 }

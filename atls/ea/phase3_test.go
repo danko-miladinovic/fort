@@ -88,9 +88,8 @@ func TestDummyAttestationRoundTrip(t *testing.T) {
 		Evidence:  []byte("dummy-attestation-report"),
 		MediaType: "application/eat+cwt",
 		Binder: attestation.AttestationBinder{
-			ExporterLabel: attestation.ExporterLabelAttestation,
-			AIKPubHash:    aikPubHash,
-			Binding:       binding,
+			AIKPubHash: aikPubHash,
+			Binding:    binding,
 		},
 	})
 	if err != nil {
@@ -172,9 +171,8 @@ func TestAttestationFailsClosedWithoutVerifier(t *testing.T) {
 		Version:  1,
 		Evidence: []byte("dummy-attestation-report"),
 		Binder: attestation.AttestationBinder{
-			ExporterLabel: attestation.ExporterLabelAttestation,
-			AIKPubHash:    aikPubHash,
-			Binding:       binding,
+			AIKPubHash: aikPubHash,
+			Binding:    binding,
 		},
 	})
 	if err != nil {
@@ -235,9 +233,8 @@ func TestRejectCMWAttestationOnIntermediateEntry(t *testing.T) {
 		Evidence:  []byte("dummy-attestation-report"),
 		MediaType: "application/eat+cwt",
 		Binder: attestation.AttestationBinder{
-			ExporterLabel: attestation.ExporterLabelAttestation,
-			AIKPubHash:    aikPubHash,
-			Binding:       binding,
+			AIKPubHash: aikPubHash,
+			Binding:    binding,
 		},
 	})
 	if err != nil {
@@ -433,9 +430,8 @@ func TestSpontaneousPolicyPermitsCertificateExtension(t *testing.T) {
 		Evidence:  []byte("dummy-attestation-report"),
 		MediaType: "application/eat+cwt",
 		Binder: attestation.AttestationBinder{
-			ExporterLabel: attestation.ExporterLabelAttestation,
-			AIKPubHash:    []byte("placeholder-aik"),
-			Binding:       []byte("placeholder-binding"),
+			AIKPubHash: []byte("placeholder-aik"),
+			Binding:    []byte("placeholder-binding"),
 		},
 	})
 	if err != nil {

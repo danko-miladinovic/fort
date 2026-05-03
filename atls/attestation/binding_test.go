@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"math/big"
 	"net"
 	"testing"
@@ -112,9 +113,8 @@ func TestPayloadRoundTrip(t *testing.T) {
 		MediaType: "application/eat+cwt",
 		Evidence:  []byte("evidence"),
 		Binder: AttestationBinder{
-			ExporterLabel: ExporterLabelAttestation,
-			AIKPubHash:    []byte("aik"),
-			Binding:       []byte("binding"),
+			AIKPubHash: []byte("aik"),
+			Binding:    []byte("binding"),
 		},
 	}
 
@@ -150,9 +150,8 @@ func TestVerifyPayloadSuccess(t *testing.T) {
 		Evidence:           []byte("evidence"),
 		AttestationResults: []byte("results"),
 		Binder: AttestationBinder{
-			ExporterLabel: ExporterLabelAttestation,
-			AIKPubHash:    aik,
-			Binding:       binding,
+			AIKPubHash: aik,
+			Binding:    binding,
 		},
 	}
 
@@ -168,6 +167,50 @@ func TestVerifyPayloadSuccess(t *testing.T) {
 	}
 	if !ev.called || !rv.called {
 		t.Fatalf("expected both verifiers to be called")
+	}
+	if verified.UsedExporterLabel != ExporterLabelAttestation {
+		t.Fatalf("unexpected exporter label: %q", verified.UsedExporterLabel)
+	}
+}
+
+func TestVerifyPayloadIgnoresPeerProvidedExporterLabel(t *testing.T) {
+	cert, leaf := makeCert(t)
+	cli := tls13Client(t, cert)
+	defer cli.Close()
+
+	st := cli.ConnectionState()
+	ctx := []byte{1, 2, 3, 4}
+	_, aik, binding, err := ComputeBinding(&st, ExporterLabelAttestation, ctx, leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := json.Marshal(map[string]any{
+		"version":  1,
+		"evidence": []byte("evidence"),
+		"binder": map[string]any{
+			"exporter_label": "peer-controlled",
+			"aik_pub_hash":   aik,
+			"binding":        binding,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := ParsePayload(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	verified, err := VerifyPayload(&st, ExporterLabelAttestation, ctx, leaf, payload, VerificationPolicy{
+		EvidenceVerifier: &stubEvidenceVerifier{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verified.UsedExporterLabel != ExporterLabelAttestation {
+		t.Fatalf("unexpected exporter label: %q", verified.UsedExporterLabel)
 	}
 }
 

@@ -25,7 +25,7 @@ func VerifyPayload(st *tls.ConnectionState, defaultLabel string, certificateRequ
 
 	verified := &VerifiedPayload{
 		Payload:           payload,
-		UsedExporterLabel: payload.NormalizedExporterLabel(defaultLabel),
+		UsedExporterLabel: defaultLabel,
 	}
 
 	if len(payload.Evidence) > 0 && policy.EvidenceVerifier != nil {
@@ -44,7 +44,7 @@ func VerifyPayload(st *tls.ConnectionState, defaultLabel string, certificateRequ
 	} else if len(payload.AttestationResults) > 0 {
 		return nil, ErrResultsVerificationMissing
 	}
-	if err := VerifyBinder(st, verified.UsedExporterLabel, certificateRequestContext, leaf, payload.Binder); err != nil {
+	if err := VerifyBinder(st, defaultLabel, certificateRequestContext, leaf, payload.Binder); err != nil {
 		return nil, err
 	}
 	verified.BindingVerified = true

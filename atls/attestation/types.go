@@ -26,9 +26,8 @@ type Payload struct {
 }
 
 type AttestationBinder struct {
-	ExporterLabel string `json:"exporter_label,omitempty"`
-	AIKPubHash    []byte `json:"aik_pub_hash,omitempty"`
-	Binding       []byte `json:"binding,omitempty"`
+	AIKPubHash []byte `json:"aik_pub_hash,omitempty"`
+	Binding    []byte `json:"binding,omitempty"`
 }
 
 type VerifiedPayload struct {
@@ -50,13 +49,6 @@ func (p *Payload) Validate() error {
 		return ErrMissingBinder
 	}
 	return nil
-}
-
-func (p *Payload) NormalizedExporterLabel(defaultLabel string) string {
-	if p == nil || p.Binder.ExporterLabel == "" {
-		return defaultLabel
-	}
-	return p.Binder.ExporterLabel
 }
 
 func MarshalPayload(p Payload) ([]byte, error) {
