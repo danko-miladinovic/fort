@@ -1,0 +1,8 @@
+# TLS credentials — generated at runtime, never commit private keys
+server/ca.crt
+server/head.crt
+server/head.key
+
+# Compiled binaries
+client/client
+server/server

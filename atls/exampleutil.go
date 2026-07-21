@@ -44,16 +44,18 @@ func GenerateExampleCertificate() (tls.Certificate, error) {
 	}
 	notBefore := time.Date(2024, time.January, 1, 0, 0, 0, 0, time.UTC)
 	template := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "atls-test"},
-		NotBefore:    notBefore,
-		NotAfter:     time.Date(2040, time.January, 1, 0, 0, 0, 0, time.UTC),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "atls-test"},
+		NotBefore:             notBefore,
+		NotAfter:              time.Date(2040, time.January, 1, 0, 0, 0, 0, time.UTC),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 		ExtKeyUsage: []x509.ExtKeyUsage{
 			x509.ExtKeyUsageServerAuth,
 			x509.ExtKeyUsageClientAuth,
 		},
-		DNSNames: []string{"localhost"},
+		DNSNames:              []string{"localhost"},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
 	}
 	der, err := x509.CreateCertificate(entropy, template, template, &priv.PublicKey, priv)
 	if err != nil {

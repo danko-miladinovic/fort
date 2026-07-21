@@ -1,3 +1,53 @@
 #!/bin/sh
+set -eu
 
-pip install ray
+cmdline_param() {
+    awk -F"$1=" '{print $2}' /proc/cmdline | cut -d' ' -f1
+}
+
+WORKER_ID=$(cmdline_param ray_worker_id)
+WORKER_ID=${WORKER_ID:-1}
+
+NODE_MANAGER_PORT=$((6380 + 2 * WORKER_ID - 1))
+OBJECT_MANAGER_PORT=$((6380 + 2 * WORKER_ID))
+
+WORKER_IP=$(cmdline_param ray_worker_ip)
+WORKER_IP=${WORKER_IP:-192.168.100.$((WORKER_ID + 1))}
+
+HEAD_IP=$(cmdline_param verifier_ip)
+HEAD_IP=${HEAD_IP:-192.168.100.1}
+RAY_HEAD_PORT=6379
+
+# Wait for TLS certs written by fort-client (ATLS attestation + cert issuance).
+while [ ! -f /root/ray-worker.crt ] || [ ! -f /root/ray-worker.key ] || [ ! -f /root/ca.crt ]; do
+    echo "Waiting for Ray TLS certs from verifier..."
+    sleep 2
+done
+
+export RAY_USE_TLS=1
+export RAY_TLS_SERVER_CERT=/root/ray-worker.crt
+export RAY_TLS_SERVER_KEY=/root/ray-worker.key
+export RAY_TLS_CA_CERT=/root/ca.crt
+export RAY_raylet_start_wait_time_s=300
+
+ray start \
+    --address="${HEAD_IP}:${RAY_HEAD_PORT}" \
+    --node-ip-address="${WORKER_IP}" \
+    --node-manager-port="${NODE_MANAGER_PORT}" \
+    --object-manager-port="${OBJECT_MANAGER_PORT}" \
+    --num-cpus="$(nproc)" \
+    --object-store-memory=209715200 || true
+
+echo "=== ray start failed — dumping internal logs ==="
+LOG_DIR=$(ls -dt /tmp/ray/session_*/logs 2>/dev/null | head -1)
+if [ -n "$LOG_DIR" ]; then
+    for f in "$LOG_DIR"/raylet.out "$LOG_DIR"/raylet.err \
+              "$LOG_DIR"/gcs_server.out "$LOG_DIR"/gcs_server.err \
+              "$LOG_DIR"/python-core-worker*.log; do
+        [ -f "$f" ] || continue
+        echo "--- $f ---"
+        tail -50 "$f"
+    done
+else
+    echo "(no ray session logs found in /tmp/ray)"
+fi

@@ -1,14 +1,14 @@
 [Unit]
-Description=Fort ATLS client
+Description=Fort ATLS client — attestation and Ray TLS cert issuance
 After=network.target
 
 [Service]
-Type=simple
+Type=oneshot
+RemainAfterExit=yes
 ExecStartPre=/root/network_up.sh
-Environment=ATLS_USE_SEV_SNP_ATTESTATION=false
 ExecStart=/usr/bin/client
-Restart=on-failure
-RestartSec=5
+StandardOutput=journal+console
+StandardError=journal+console
 
 [Install]
 WantedBy=multi-user.target

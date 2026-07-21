@@ -1,9 +1,14 @@
 [Unit]
 Description=Fort init
-After=network.target
+After=network-online.target fort-client.service
+Wants=network-online.target
 
 [Service]
+Type=oneshot
+RemainAfterExit=yes
 WorkingDirectory=/root
+StandardOutput=journal+console
+StandardError=journal+console
 
 ExecStartPre=/root/network_up.sh
 ExecStart=/root/ray_init.sh

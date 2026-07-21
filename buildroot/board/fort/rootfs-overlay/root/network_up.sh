@@ -1,16 +1,21 @@
 #!/bin/sh
 
-IFACES=$(ip link show | grep -vE 'LOOPBACK|sit*' | awk -F': ' '{print $2}')
+cmdline_param() {
+    awk -F"$1=" '{print $2}' /proc/cmdline | cut -d' ' -f1
+}
 
-# This for loop brings up all network interfaces in IFACES and dhclient obtains an IP address for the every interface
-for IFACE in $IFACES; do
-    STATE=$(ip link show $IFACE | grep DOWN)
-    if [ -n "$STATE" ]; then
-        ip link set $IFACE up
-    fi
+WORKER_ID=$(cmdline_param ray_worker_id)
+WORKER_ID=${WORKER_ID:-1}
 
-    IP_ADDR=$(ip addr show $IFACE | grep 'inet ')
-    if [ -z "$IP_ADDR" ]; then
-        dhclient $IFACE
-    fi
-done
+# Wait for all udev events (including interface renames) to complete before
+# querying the interface name, so we always get the final post-rename name.
+udevadm settle --timeout=10
+IFACE=$(ip -o link show | awk -F': ' '$3 !~ /LOOPBACK/ {print $2; exit}')
+
+WORKER_IP="192.168.100.$((WORKER_ID + 1))"
+GATEWAY="192.168.100.1"
+
+ip link set "$IFACE" up
+ip addr add "${WORKER_IP}/24" dev "$IFACE" 2>/dev/null || true
+ip route add default via "$GATEWAY" 2>/dev/null || true
+echo "nameserver 8.8.8.8" > /etc/resolv.conf

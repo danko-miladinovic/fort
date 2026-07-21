@@ -1,9 +1,15 @@
 package main
 
 import (
-	"bufio"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -15,12 +21,14 @@ import (
 )
 
 const (
-	defaultATLSAddr         = "127.0.0.1:9443"
-	kernelCmdlinePath       = "/proc/cmdline"
-	verifierIPKernelParam   = "verifier_ip"
-	verifierPortKernelParam = "verifier_port"
-	connectRetryInterval    = 5 * time.Second
-	useSEVSNPAttestationEnv = "ATLS_USE_SEV_SNP_ATTESTATION"
+	defaultATLSAddr             = "127.0.0.1:9443"
+	kernelCmdlinePath           = "/proc/cmdline"
+	verifierIPKernelParam       = "verifier_ip"
+	verifierPortKernelParam     = "verifier_port"
+	atls_snp_attestation_param  = "atls_snp_attestation"
+	connectRetryInterval        = 5 * time.Second
+	useSEVSNPAttestationEnv     = "ATLS_USE_SEV_SNP_ATTESTATION"
+	rayCertDir                  = "/root"
 )
 
 func main() {
@@ -36,15 +44,20 @@ func main() {
 }
 
 func run(addr string) error {
-	useSEVSNPAttestation, err := boolEnv(useSEVSNPAttestationEnv)
-	if err != nil {
-		return err
-	}
-	cert, err := atls.GenerateExampleCertificate()
+	useSEVSNPAttestation, err := resolveSEVSNPAttestation(os.Getenv, os.ReadFile)
 	if err != nil {
 		return err
 	}
 
+	key, csrPEM, err := generateCSR()
+	if err != nil {
+		return fmt.Errorf("generate CSR: %w", err)
+	}
+
+	atlasCert, err := atls.GenerateExampleCertificate()
+	if err != nil {
+		return err
+	}
 	conn, err := atls.Dial("tcp", addr, &atls.ClientConfig{
 		TLSConfig: &tls.Config{
 			InsecureSkipVerify: true,
@@ -52,24 +65,75 @@ func run(addr string) error {
 			MinVersion:         tls.VersionTLS13,
 			MaxVersion:         tls.VersionTLS13,
 		},
-		Identity:            cert,
+		Identity:            atlasCert,
 		BuildLeafExtensions: atls.AttesterLeafExtensions(useSEVSNPAttestation),
 	})
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+	log.Printf("EA bootstrap complete; sending CSR")
 
-	log.Printf("EA bootstrap complete; client attestation sent")
-	if _, err := fmt.Fprintln(conn, "Hello World!"); err != nil {
-		return err
+	if _, err := conn.Write(csrPEM); err != nil {
+		return fmt.Errorf("send CSR: %w", err)
 	}
-	reply, err := bufio.NewReader(conn).ReadString('\n')
+
+	// Server closes the connection after sending certs; read until EOF.
+	certData, err := io.ReadAll(conn)
 	if err != nil {
-		return err
+		return fmt.Errorf("read certs: %w", err)
 	}
-	fmt.Print(reply)
+
+	workerCertPEM, caCertPEM, err := splitCerts(certData)
+	if err != nil {
+		return fmt.Errorf("parse cert response: %w", err)
+	}
+
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return fmt.Errorf("marshal key: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	if err := os.WriteFile(rayCertDir+"/ray-worker.crt", workerCertPEM, 0644); err != nil {
+		return fmt.Errorf("write worker cert: %w", err)
+	}
+	if err := os.WriteFile(rayCertDir+"/ray-worker.key", keyPEM, 0600); err != nil {
+		return fmt.Errorf("write worker key: %w", err)
+	}
+	if err := os.WriteFile(rayCertDir+"/ca.crt", caCertPEM, 0644); err != nil {
+		return fmt.Errorf("write CA cert: %w", err)
+	}
+	log.Printf("Ray TLS certs written to %s", rayCertDir)
 	return nil
+}
+
+func generateCSR() (*ecdsa.PrivateKey, []byte, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	tmpl := &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "fort-ray-worker"},
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, tmpl, key)
+	if err != nil {
+		return nil, nil, err
+	}
+	return key, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}), nil
+}
+
+// splitCerts decodes the first two PEM blocks from data (worker cert, CA cert).
+func splitCerts(data []byte) (workerCertPEM, caCertPEM []byte, err error) {
+	b1, rest := pem.Decode(data)
+	if b1 == nil {
+		return nil, nil, fmt.Errorf("no worker cert block")
+	}
+	b2, _ := pem.Decode(rest)
+	if b2 == nil {
+		return nil, nil, fmt.Errorf("no CA cert block")
+	}
+	return pem.EncodeToMemory(b1), pem.EncodeToMemory(b2), nil
 }
 
 func resolveDialAddress(getenv func(string) string, readFile func(string) ([]byte, error)) string {
@@ -79,13 +143,11 @@ func resolveDialAddress(getenv func(string) string, readFile func(string) ([]byt
 	if addr, ok := verifierAddressFromSource(getenv("VERIFIER_IP"), getenv("VERIFIER_PORT")); ok {
 		return addr
 	}
-
 	cmdline, err := readFile(kernelCmdlinePath)
 	if err != nil {
 		log.Printf("unable to read %s: %v", kernelCmdlinePath, err)
 		return defaultATLSAddr
 	}
-
 	params := parseKernelCmdline(string(cmdline))
 	if addr, ok := verifierAddressFromSource(
 		params[verifierIPKernelParam],
@@ -93,7 +155,6 @@ func resolveDialAddress(getenv func(string) string, readFile func(string) ([]byt
 	); ok {
 		return addr
 	}
-
 	return defaultATLSAddr
 }
 
@@ -116,6 +177,25 @@ func parseKernelCmdline(cmdline string) map[string]string {
 		params[key] = value
 	}
 	return params
+}
+
+// resolveSEVSNPAttestation returns true if real SEV-SNP attestation should be
+// used. The kernel cmdline parameter atls_snp_attestation takes precedence over
+// the ATLS_USE_SEV_SNP_ATTESTATION env var, so a plain VM can be launched with
+// atls_snp_attestation=false on the cmdline without a separate image.
+func resolveSEVSNPAttestation(getenv func(string) string, readFile func(string) ([]byte, error)) (bool, error) {
+	cmdline, err := readFile(kernelCmdlinePath)
+	if err == nil {
+		params := parseKernelCmdline(string(cmdline))
+		if v, ok := params[atls_snp_attestation_param]; ok {
+			enabled, err := strconv.ParseBool(v)
+			if err != nil {
+				return false, fmt.Errorf("invalid %s value %q in kernel cmdline", atls_snp_attestation_param, v)
+			}
+			return enabled, nil
+		}
+	}
+	return boolEnv(useSEVSNPAttestationEnv)
 }
 
 func boolEnv(key string) (bool, error) {
