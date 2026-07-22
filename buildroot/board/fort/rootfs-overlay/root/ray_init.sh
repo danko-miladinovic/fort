@@ -5,8 +5,14 @@ cmdline_param() {
     awk -F"$1=" '{print $2}' /proc/cmdline | cut -d' ' -f1
 }
 
+# Prefer ray_worker_id from kernel cmdline; fall back to the last octet of the
+# MAC address, which QEMU sets to the 1-based worker index (52:54:00:12:34:XX).
 WORKER_ID=$(cmdline_param ray_worker_id)
-WORKER_ID=${WORKER_ID:-1}
+if [ -z "$WORKER_ID" ]; then
+    IFACE=$(ip -o link show | awk -F': ' '$3 !~ /LOOPBACK/ {print $2; exit}')
+    MAC=$(ip link show "$IFACE" | awk '/ether/ {print $2}')
+    WORKER_ID=$(printf '%d' "0x${MAC##*:}")
+fi
 
 NODE_MANAGER_PORT=$((6380 + 2 * WORKER_ID - 1))
 OBJECT_MANAGER_PORT=$((6380 + 2 * WORKER_ID))

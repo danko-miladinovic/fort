@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"log"
@@ -132,6 +133,41 @@ func main() {
 	headCertPath := envOrDefault("RAY_HEAD_CERT_PATH", "head.crt")
 	headKeyPath := envOrDefault("RAY_HEAD_KEY_PATH", "head.key")
 
+	// SNP verification config (env-driven so it survives binary deploys).
+	//
+	//   FORT_SKIP_SNP_VERIFY=true   — skip AMD VCEK signature check; accept any
+	//                                 valid SEV-SNP proto (for QEMU test setups).
+	//   FORT_EXPECTED_MEASUREMENT=<96 hex chars>
+	//                               — require this exact 48-byte measurement.
+	//
+	// Non-SEV (dummy evidence) clients are always rejected once SNP verification
+	// is in use; the bypass only affects the AMD signature chain check.
+	skipSNPVerify := strings.EqualFold(os.Getenv("FORT_SKIP_SNP_VERIFY"), "true")
+	allowDummy := strings.EqualFold(os.Getenv("FORT_ALLOW_DUMMY"), "true")
+	var expectedMeasurement []byte
+	if m := strings.TrimSpace(os.Getenv("FORT_EXPECTED_MEASUREMENT")); m != "" {
+		var err error
+		expectedMeasurement, err = hex.DecodeString(m)
+		if err != nil || len(expectedMeasurement) != 48 {
+			log.Fatalf("FORT_EXPECTED_MEASUREMENT must be 96 hex chars (48 bytes), got %q", m)
+		}
+	}
+
+	snpVerifier := &SNPEvidenceVerifier{
+		SkipVerification:    skipSNPVerify,
+		AllowDummy:          allowDummy,
+		ExpectedMeasurement: expectedMeasurement,
+	}
+	if skipSNPVerify {
+		log.Printf("WARNING: SNP AMD signature verification DISABLED (FORT_SKIP_SNP_VERIFY=true)")
+	}
+	if allowDummy {
+		log.Printf("WARNING: dummy (non-SEV) evidence ACCEPTED (FORT_ALLOW_DUMMY=true)")
+	}
+	if expectedMeasurement != nil {
+		log.Printf("SNP measurement enforcement enabled: %s", hex.EncodeToString(expectedMeasurement))
+	}
+
 	ca, err := newIssuingCA()
 	if err != nil {
 		log.Fatalf("create CA: %v", err)
@@ -163,7 +199,7 @@ func main() {
 		},
 		VerifyOptions: nil, // EA signature + attestation evidence provide the security guarantee
 		AttestationPolicy: attestation.VerificationPolicy{
-			EvidenceVerifier: atls.AcceptEvidenceVerifier{},
+			EvidenceVerifier: snpVerifier,
 		},
 	})
 	if err != nil {

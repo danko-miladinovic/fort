@@ -6,3 +6,4 @@ server/head.key
 # Compiled binaries
 client/client
 server/server
+tools/compute-measurement/compute-measurement

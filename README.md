@@ -124,8 +124,36 @@ working directory, then waits for CVM connections.
 
 ```sh
 cd fort/server
-RAY_HEAD_IP=147.91.12.238 ATLS_ADDR=0.0.0.0:9443 go run .
+go build -o server .
 ```
+
+**With real AMD hardware** (full attestation + measurement enforcement):
+
+```sh
+# Compute the expected measurement first (see compute-measurement below)
+MEASUREMENT=$(../tools/compute-measurement/compute-measurement \
+    -kernel /path/to/bzImage \
+    -initrd /path/to/rootfs.cpio.gz \
+    -append "console=ttyS0 root=/dev/ram0 rw verifier_ip=192.168.100.1 verifier_port=9443 atls_snp_attestation=true")
+
+RAY_HEAD_IP=147.91.12.238 FORT_EXPECTED_MEASUREMENT="$MEASUREMENT" ./server
+```
+
+**Without AMD hardware** (skip AMD VCEK chain check; accept dummy evidence from plain VMs):
+
+```sh
+RAY_HEAD_IP=147.91.12.238 FORT_SKIP_SNP_VERIFY=true FORT_ALLOW_DUMMY=true ./server
+```
+
+Environment variables consumed by the server:
+
+| Variable | Default | Description |
+|---|---|---|
+| `ATLS_ADDR` | `0.0.0.0:9443` | Listen address |
+| `RAY_HEAD_IP` | `127.0.0.1` | IP embedded in the issued head TLS cert |
+| `FORT_EXPECTED_MEASUREMENT` | *(none — any measurement accepted)* | Required 48-byte SEV-SNP launch measurement as 96 hex chars |
+| `FORT_SKIP_SNP_VERIFY` | `false` | Skip AMD VCEK certificate chain check (testing only) |
+| `FORT_ALLOW_DUMMY` | `false` | Accept non-SEV (dummy) evidence from plain VMs (testing only) |
 
 Each CVM worker that passes attestation will receive a signed Ray TLS cert.
 
@@ -243,8 +271,11 @@ ray stop
 
 ```sh
 cd fort/server
-RAY_HEAD_IP=147.91.12.238 ATLS_ADDR=0.0.0.0:9443 go run .
+RAY_HEAD_IP=147.91.12.238 FORT_SKIP_SNP_VERIFY=true FORT_ALLOW_DUMMY=true ./server
 ```
+
+`FORT_ALLOW_DUMMY=true` is required here because plain VMs send dummy (non-SEV)
+attestation evidence. `FORT_SKIP_SNP_VERIFY=true` skips the AMD VCEK chain check.
 
 #### 7.2 Start the Ray Head
 
@@ -295,8 +326,12 @@ enrollment time is measured fresh on every run.
 
 #### 8.1 Collect SEV-SNP runs
 
+Prerequisites: tap interfaces set up (step 1) and `sudo` pre-authenticated.
+The script handles everything else: it builds `compute-measurement` if needed,
+computes the expected measurement from the OVMF + kernel + initrd, starts the
+verifier with measurement enforcement, and stops it on exit.
+
 ```sh
-# Pre-requisites: verifier running, tap interfaces set up (steps 1–2)
 sudo -v
 ./run-benchmarks-sev.sh 10 14
 ```
@@ -304,11 +339,26 @@ sudo -v
 Positional arguments: `RUNS` (default 10), `WORKERS` (default 14),
 `REPEAT` inner reps whose median is kept (default 3).
 
+Key environment overrides:
+
+| Variable | Default | Description |
+|---|---|---|
+| `FORT_OVMF_PATH` | `OVMF.amdsev.fd` in repo root | AMD SEV OVMF firmware binary |
+| `FORT_KERNEL_PATH` | `buildroot/output/images/bzImage` | Kernel to include in measurement |
+| `FORT_INITRD_PATH` | `buildroot/output/images/rootfs.cpio.gz` | Initramfs to include in measurement |
+| `FORT_KERNEL_CMDLINE` | matches `-append` in `launch.sh` | Cmdline string; must be identical across all workers |
+| `FORT_VCPU_COUNT` | `2` | Must match `-smp` in `launch.sh` |
+| `FORT_VCPU_TYPE` | `EPYC-v4` | Must match `-cpu` in `launch.sh` |
+
 Results are written to `results-sev/run-01.csv` … `run-10.csv`.
 
 #### 8.2 Collect no-SEV runs
 
+Prerequisites: tap interfaces set up (step 1) and `sudo` pre-authenticated.
+The script starts the verifier in dummy-accept mode automatically.
+
 ```sh
+sudo -v
 ./run-benchmarks-nosnp.sh 10 14
 ```
 
@@ -362,20 +412,21 @@ sudo fort/teardown-bridge.sh 14
 
 ## Key Scripts
 
-| Script                      | Purpose                                                         |
-|-----------------------------|-----------------------------------------------------------------|
-| `fort/setup-bridge.sh N`    | Create bridge `br0` and N tap devices                           |
-| `fort/teardown-bridge.sh N` | Remove bridge `br0`, dummy `vnet0`, and N tap devices           |
-| `launch.sh`                 | Boot one SEV-SNP CVM (`atls_snp_attestation=true`)              |
-| `launch-workers.sh N`       | Boot N SEV-SNP CVMs in parallel                                 |
-| `launch-nosnp.sh`           | Boot one plain VM (`-cpu EPYC-v4`, `atls_snp_attestation=false`) |
-| `launch-workers-nosnp.sh N` | Boot N plain VMs in parallel (for SEV overhead comparison)       |
-| `fort/server`               | ATLS verifier + CA: attests CVMs and issues Ray TLS certs        |
-| `fort/test_ray.py`          | Smoke test: `double(x) = x + x`                                  |
-| `fort/bench_ray.py`         | Full 6-metric HPC benchmark (single run)                         |
-| `run-benchmarks-sev.sh`     | Collect N independent SEV-SNP runs → `results-sev/run-NN.csv`   |
-| `run-benchmarks-nosnp.sh`   | Collect N independent no-SEV runs → `results-nosnp/run-NN.csv`  |
-| `aggregate.py`              | Compute mean ± std across runs; compare SEV vs no-SEV overhead   |
+| Script                                       | Purpose                                                                           |
+|----------------------------------------------|-----------------------------------------------------------------------------------|
+| `fort/setup-bridge.sh N`                     | Create bridge `br0` and N tap devices                                             |
+| `fort/teardown-bridge.sh N`                  | Remove bridge `br0`, dummy `vnet0`, and N tap devices                             |
+| `launch.sh`                                  | Boot one SEV-SNP CVM (`atls_snp_attestation=true`, `kernel-hashes=on`)           |
+| `launch-workers.sh N`                        | Boot N SEV-SNP CVMs in parallel                                                   |
+| `launch-nosnp.sh`                            | Boot one plain VM (`-cpu EPYC-v4`, `atls_snp_attestation=false`)                 |
+| `launch-workers-nosnp.sh N`                  | Boot N plain VMs in parallel (for SEV overhead comparison)                        |
+| `fort/server`                                | ATLS verifier + CA: verifies AMD VCEK chain, enforces measurement, issues Ray TLS certs |
+| `fort/tools/compute-measurement`             | Compute expected SEV-SNP launch measurement from OVMF + kernel + initrd + cmdline |
+| `fort/test_ray.py`                           | Smoke test: `double(x) = x + x`                                                  |
+| `fort/bench_ray.py`                          | Full 6-metric HPC benchmark (single run)                                          |
+| `run-benchmarks-sev.sh`                      | Collect N independent SEV-SNP runs → `results-sev/run-NN.csv`                    |
+| `run-benchmarks-nosnp.sh`                    | Collect N independent no-SEV runs → `results-nosnp/run-NN.csv`                   |
+| `aggregate.py`                               | Compute mean ± std across runs; compare SEV vs no-SEV overhead                   |
 
 ## Port Assignment
 
